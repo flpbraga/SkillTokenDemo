@@ -25,12 +25,14 @@ public static class PromptComparer
     public static async Task<PromptComparison> CompareAsync(
         LiveRunner runner, string skillName, string prompt, string? context = null, CancellationToken ct = default)
     {
-        var message = string.IsNullOrWhiteSpace(context)
-            ? prompt
-            : $"Existing code:\n{context}\n\nTask:\n{prompt}";
+        var message = BuildMessage(prompt, context);
 
         var baseline = await runner.AskOnceAsync(SkillInstructions.For("Normal"), message, ct);
         var withSkill = await runner.AskOnceAsync(SkillInstructions.For(skillName), message, ct);
         return new PromptComparison(skillName, prompt, baseline, withSkill);
     }
+
+    /// <summary>The user message: the task alone, or the existing code followed by the task.</summary>
+    public static string BuildMessage(string prompt, string? context) =>
+        string.IsNullOrWhiteSpace(context) ? prompt : $"Existing code:\n{context}\n\nTask:\n{prompt}";
 }

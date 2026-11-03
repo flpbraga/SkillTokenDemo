@@ -18,7 +18,7 @@ app.MapGet("/api/example", (string? kind) => kind == "text"
     ? Results.Ok(new { prompt = ComparisonExample.TextPrompt, context = "", knownSymbols = Array.Empty<string>() })
     : Results.Ok(new
     {
-        prompt = ComparisonExample.Prompt,
+        prompt = kind == "vague" ? ComparisonExample.VaguePrompt : ComparisonExample.Prompt,
         context = ComparisonExample.Context,
         knownSymbols = ComparisonExample.KnownSymbols
     }));
@@ -52,14 +52,9 @@ app.MapPost("/api/live", async (string? model, IConfiguration config, Cancellati
 app.MapPost("/api/compare", async (CompareRequest request, IConfiguration config, CancellationToken ct) =>
 {
     var prompt = request.Prompt?.Trim() ?? "";
-    if (prompt.Length == 0 || prompt.Length > 4000)
+    if (ValidateInput(prompt, request.Context) is { } invalid)
     {
-        return Results.BadRequest(new { error = "The prompt must be between 1 and 4000 characters." });
-    }
-
-    if (request.Context is { Length: > 8000 })
-    {
-        return Results.BadRequest(new { error = "The existing code must be at most 8000 characters." });
+        return Results.BadRequest(new { error = invalid });
     }
 
     var skillNames = ScenarioCatalogue.All().Select(s => s.Skill.Name).Where(n => n != "Normal").ToHashSet();
@@ -98,7 +93,170 @@ app.MapPost("/api/compare", async (CompareRequest request, IConfiguration config
     }
 });
 
+// grill-me: the model asks, the example's fact sheet answers, until the model stops asking.
+app.MapPost("/api/clarify", async (CompareRequest request, IConfiguration config, CancellationToken ct) =>
+{
+    var prompt = request.Prompt?.Trim() ?? "";
+    if (ValidateInput(prompt, request.Context) is { } invalid)
+    {
+        return Results.BadRequest(new { error = invalid });
+    }
+
+    var (http, model, error) = CreateLiveClient(config, null);
+    if (http is null)
+    {
+        return Results.BadRequest(new { error });
+    }
+
+    try
+    {
+        using var client = http;
+        var runner = new LiveRunner(client, model);
+        var known = request.KnownSymbols ?? [];
+        var message = PromptComparer.BuildMessage(prompt, request.Context);
+
+        var baseline = await runner.AskOnceAsync(SkillInstructions.For("Normal"), message, ct);
+        var session = await ClarifyingSession.RunAsync(
+            runner, SkillInstructions.For("grill-me"), message, ComparisonExample.AnswerFor, ct: ct);
+
+        return Results.Ok(new
+        {
+            outputWeight = CostCalculator.OutputWeight,
+            topicCount = ClarifyingTopics.Patterns.Count,
+            baseline = ToReply(baseline, baseline.InputTokens + baseline.OutputTokens * CostCalculator.OutputWeight, known),
+            session = new
+            {
+                rounds = session.QuestionRounds,
+                reachedUnderstanding = session.ReachedUnderstanding,
+                calls = session.Turns.Count(t => t.Role == "assistant"),
+                input = session.InputTokens,
+                output = session.OutputTokens,
+                cost = session.Cost,
+                topicsCovered = session.TopicsCovered,
+                final = ToMetrics(session.FinalReply, known),
+                turns = session.Turns.Skip(1) // the first turn is the task the page already shows
+                    .Select(t => new { role = t.Role, text = t.Text, input = t.InputTokens, output = t.OutputTokens })
+            }
+        });
+    }
+    catch (HttpRequestException ex)
+    {
+        return Results.Json(new { error = ex.Message }, statusCode: StatusCodes.Status502BadGateway);
+    }
+});
+
+// superpowers: three of its process steps tested in isolation, each against its own fixed scenario.
+app.MapPost("/api/superpowers", async (SuperpowersRequest request, IConfiguration config, CancellationToken ct) =>
+{
+    if (request.Mode is not ("brainstorm" or "plan" or "review"))
+    {
+        return Results.BadRequest(new { error = "Mode must be one of: brainstorm, plan, review." });
+    }
+
+    var (http, model, error) = CreateLiveClient(config, null);
+    if (http is null)
+    {
+        return Results.BadRequest(new { error });
+    }
+
+    try
+    {
+        using var client = http;
+        var runner = new LiveRunner(client, model);
+        object result = request.Mode switch
+        {
+            "brainstorm" => await RunBrainstorm(runner, ct),
+            "plan" => await RunPlan(runner, ct),
+            _ => await RunReview(runner, ct)
+        };
+        return Results.Ok(result);
+    }
+    catch (HttpRequestException ex)
+    {
+        return Results.Json(new { error = ex.Message }, statusCode: StatusCodes.Status502BadGateway);
+    }
+});
+
 app.Run();
+
+static double Cost(SingleReply reply) => reply.InputTokens + reply.OutputTokens * CostCalculator.OutputWeight;
+
+// Brainstorm: a vague task, clarified one question at a time, should end in a design with no code — contrasted
+// with Normal, which gets the same message and (typically) starts implementing right away.
+static async Task<object> RunBrainstorm(LiveRunner runner, CancellationToken ct)
+{
+    var message = PromptComparer.BuildMessage(ComparisonExample.VaguePrompt, ComparisonExample.Context);
+    var normal = await runner.AskOnceAsync(SkillInstructions.For("Normal"), message, ct);
+    var session = await ClarifyingSession.RunAsync(
+        runner, SuperpowersScenarios.BrainstormSystem, message, ComparisonExample.AnswerFor, ClarifyingGoal.Design, ct: ct);
+    var presentedDesignWithoutCode = !ReplyAnalyser.Analyse(session.FinalReply, []).HasCode;
+
+    return new
+    {
+        mode = "brainstorm",
+        outputWeight = CostCalculator.OutputWeight,
+        topicCount = ClarifyingTopics.Patterns.Count,
+        normal = new
+        {
+            input = normal.InputTokens, output = normal.OutputTokens, cost = Cost(normal), text = normal.Text,
+            hasCode = ReplyAnalyser.Analyse(normal.Text, []).HasCode
+        },
+        rounds = session.QuestionRounds,
+        reachedUnderstanding = session.ReachedUnderstanding,
+        topicsCovered = session.TopicsCovered,
+        presentedDesignWithoutCode,
+        cost = session.Cost,
+        input = session.InputTokens,
+        output = session.OutputTokens,
+        turns = session.Turns.Skip(1)
+            .Select(t => new { role = t.Role, text = t.Text, input = t.InputTokens, output = t.OutputTokens })
+    };
+}
+
+// Writing-plans: given an already-approved design, does the plan put a failing test before each task's
+// implementation step (TDD order)? Compared against Normal asked for the same plan.
+static async Task<object> RunPlan(LiveRunner runner, CancellationToken ct)
+{
+    var message = $"Existing code:\n{ComparisonExample.Context}\n\n{SuperpowersScenarios.ApprovedDesign}\n\n" +
+                  "Write the implementation plan.";
+    var normal = await runner.AskOnceAsync(SkillInstructions.For("Normal"), message, ct);
+    var plan = await runner.AskOnceAsync(SuperpowersScenarios.WritingPlansSystem, message, ct);
+
+    return new { mode = "plan", outputWeight = CostCalculator.OutputWeight, normal = ToPlanReply(normal), skill = ToPlanReply(plan) };
+}
+
+static object ToPlanReply(SingleReply reply)
+{
+    var m = PlanAnalyser.Analyse(reply.Text);
+    return new
+    {
+        input = reply.InputTokens, output = reply.OutputTokens, cost = Cost(reply), text = reply.Text,
+        taskCount = m.TaskCount, testFirst = m.TasksWithTestFirst
+    };
+}
+
+// Code review: the given code has one planted defect (a shipped order can still be cancelled). Does the
+// reply call it out? Compared against Normal asked to review the same code.
+static async Task<object> RunReview(LiveRunner runner, CancellationToken ct)
+{
+    var message = $"{SuperpowersScenarios.CodeReviewPrompt}\n\n```csharp\n{SuperpowersScenarios.BuggyContext}\n```";
+    var normal = await runner.AskOnceAsync(SkillInstructions.For("Normal"), message, ct);
+    var review = await runner.AskOnceAsync(SuperpowersScenarios.CodeReviewSystem, message, ct);
+
+    return new { mode = "review", outputWeight = CostCalculator.OutputWeight, normal = ToReviewReply(normal), skill = ToReviewReply(review) };
+}
+
+static object ToReviewReply(SingleReply reply) => new
+{
+    input = reply.InputTokens, output = reply.OutputTokens, cost = Cost(reply), text = reply.Text,
+    foundDefect = SuperpowersScenarios.FoundPlantedDefect(reply.Text),
+    grade = SuperpowersScenarios.GradeReview(reply.Text).ToString().ToLowerInvariant() // missed | partial | found
+};
+
+static string? ValidateInput(string prompt, string? context) =>
+    prompt.Length is 0 or > 4000 ? "The prompt must be between 1 and 4000 characters."
+    : context is { Length: > 8000 } ? "The existing code must be at most 8000 characters."
+    : null;
 
 static (HttpClient? Http, string Model, string? Error) CreateLiveClient(IConfiguration config, string? model)
 {
@@ -115,25 +273,27 @@ static (HttpClient? Http, string Model, string? Error) CreateLiveClient(IConfigu
     return (client, chosenModel, null);
 }
 
-static object ToReply(SingleReply reply, double cost, IReadOnlyCollection<string> knownSymbols)
+static object ToReply(SingleReply reply, double cost, IReadOnlyCollection<string> knownSymbols) => new
 {
-    var metrics = ReplyAnalyser.Analyse(reply.Text, knownSymbols);
+    input = reply.InputTokens,
+    output = reply.OutputTokens,
+    cost,
+    text = reply.Text,
+    metrics = ToMetrics(reply.Text, knownSymbols)
+};
+
+static object ToMetrics(string text, IReadOnlyCollection<string> knownSymbols)
+{
+    var metrics = ReplyAnalyser.Analyse(text, knownSymbols);
     return new
     {
-        input = reply.InputTokens,
-        output = reply.OutputTokens,
-        cost,
-        text = reply.Text,
-        metrics = new
-        {
-            codeLines = metrics.CodeLines,
-            newTypes = metrics.NewTypes,
-            reusedSymbols = metrics.ReusedSymbols,
-            hasTest = metrics.HasTest,
-            questions = metrics.Questions,
-            hasCode = metrics.HasCode,
-            topicsCovered = ClarifyingTopics.Covered(reply.Text)
-        }
+        codeLines = metrics.CodeLines,
+        newTypes = metrics.NewTypes,
+        reusedSymbols = metrics.ReusedSymbols,
+        hasTest = metrics.HasTest,
+        questions = metrics.Questions,
+        hasCode = metrics.HasCode,
+        topicsCovered = ClarifyingTopics.Covered(text)
     };
 }
 
@@ -171,3 +331,5 @@ public sealed record CompareRequest(
     string? Prompt,
     string? Context = null,
     IReadOnlyList<string>? KnownSymbols = null);
+
+public sealed record SuperpowersRequest(string? Mode);

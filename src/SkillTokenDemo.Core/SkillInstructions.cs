@@ -12,7 +12,9 @@ public static class SkillInstructions
         ["Normal"] = "You are a helpful coding assistant.",
         ["grill-me"] = "You are a coding assistant. Before acting on a plan, interview the user one question at a time, " +
                        "walking the decision tree in dependency order and giving a recommended answer for each question. " +
-                       "Only implement once you share an understanding.",
+                       "Only implement once you share an understanding. Your first reply must be a single question, " +
+                       "never code. Ask one question per reply and end it with a question mark. Do not write any code " +
+                       "until the user has answered your questions; then reply with the implementation in a code block.",
         ["caveman"] = "You are a coding assistant. Answer in terse, answer-first prose with no filler or pleasantries. " +
                       "Keep code, commands, paths and error messages verbatim. Keep numbers and negations.",
         ["ponytail"] = "You are a coding assistant. Read the relevant code first, then write the least code that works: " +

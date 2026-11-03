@@ -56,6 +56,27 @@
   .error { background: var(--err-bg); color: var(--err-text); border-radius: 8px; padding: 10px 14px; margin-top: 12px; font-size: 0.92rem; }
   .foot { color: var(--muted); font-size: 0.82rem; margin-top: 20px; }
   #details { margin-top: 14px; }
+  .chat-title { font-size: 0.95rem; margin: 18px 0 8px; }
+  .chat { display: grid; gap: 10px; }
+  .msg { border-left: 3px solid var(--accent); padding-left: 10px; }
+  .msg.user { border-left-color: var(--good); }
+  .who { font-weight: 600; font-size: 0.88rem; margin-bottom: 4px; }
+  .history-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+  .card h2 { font-size: 1rem; margin: 0 0 10px; }
+  .history-head h2 { margin: 0; }
+  .sp-step { margin: 14px 0 6px; font-weight: 600; font-size: 0.92rem; }
+  .ok { color: var(--good); } .notok { color: var(--bad); }
+  th.left, td.left { text-align: left; }
+  .info-btn { width: 18px; height: 18px; border-radius: 50%; border: 1px solid var(--line); background: var(--bg);
+    color: var(--muted); font-size: 0.75rem; line-height: 1; cursor: pointer; margin-left: 6px; padding: 0; vertical-align: middle; }
+  .info-btn:hover { border-color: var(--accent); color: var(--accent); }
+  .popover-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.3); display: flex; align-items: center;
+    justify-content: center; padding: 16px; z-index: 10; }
+  .popover-box { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 18px;
+    max-width: 420px; }
+  .popover-box h3 { margin: 0 0 8px; font-size: 1rem; }
+  .popover-box p { margin: 0 0 14px; font-size: 0.9rem; }
+  .popover-box button { margin-left: auto; display: block; }
   @media (max-width: 560px) {
     main { padding: 20px 12px 40px; }
     .replies { grid-template-columns: 1fr; }
@@ -90,34 +111,41 @@
     <div id="compare-result"></div>
   </section>
 
-  <details class="card">
-    <summary>Estimated comparison of the skills</summary>
-    <div class="modes" role="group" aria-label="Mode">
-      <button id="btn-estimated" aria-pressed="true">Estimated</button>
-      <button id="btn-live" aria-pressed="false">Live</button>
+  <section class="card" id="superpowers-card">
+    <h2>Test superpowers' process</h2>
+    <p class="sub" style="margin-bottom:12px">superpowers is a multi-step process, not a one-reply change, so each
+      button below runs a fixed scenario for that one step and compares it with Normal doing the same thing.</p>
+    <div class="actions">
+      <button id="sp-brainstorm" class="btn">Brainstorm</button>
+      <button id="sp-plan" class="btn">Writing-plans</button>
+      <button id="sp-review" class="btn">Code review</button>
     </div>
-    <div id="estimate-error"></div>
+    <div id="superpowers-result"></div>
+  </section>
+
+  <section class="card">
+    <div class="history-head">
+      <h2>Results so far</h2>
+      <button id="history-clear" class="ghost">Clear</button>
+    </div>
     <div style="overflow-x:auto">
       <table>
         <thead>
-          <tr><th>Skill</th><th>Turns</th><th>Input</th><th>Output</th><th>Cost*</th><th>vs Normal</th></tr>
+          <tr><th>Skill</th><th class="left">Prompt</th><th>Normal cost*</th><th>Skill cost*</th><th>vs Normal</th><th class="left">Key result</th></tr>
         </thead>
-        <tbody id="summary"></tbody>
+        <tbody id="history"></tbody>
       </table>
     </div>
-    <p class="foot" id="costnote"></p>
-    <div id="details"></div>
-  </details>
+    <p class="foot">* Cost = input + 5 × output; for grill-me it is summed over the whole conversation. vs Normal: positive = cheaper. Each skill keeps its latest run, saved in this browser only.</p>
+  </section>
 
-  <p class="foot">Illustrative numbers: the conversations in the estimated table are written by hand. In Live mode and in the comparison, the skill instructions are short versions, not the real SKILL.md files.</p>
+  <p class="foot">The skill instructions are short versions, not the real SKILL.md files.</p>
 </main>
 
 <script>
 const $ = (id) => document.getElementById(id);
 const fmt = (n) => Math.round(n).toLocaleString('en-GB');
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-let state = null;
-let openSkill = null;
 let exampleKnown = [];
 const TOPIC_LABELS = {
   'existing': 'existing code',
@@ -127,68 +155,94 @@ const TOPIC_LABELS = {
   'tests': 'tests'
 };
 
-function setMode(live) {
-  $('btn-estimated').setAttribute('aria-pressed', String(!live));
-  $('btn-live').setAttribute('aria-pressed', String(live));
+// Latest run per skill, kept in this browser so the table survives a reload.
+const SKILLS = ['grill-me', 'caveman', 'ponytail',
+  'superpowers: brainstorm', 'superpowers: writing-plans', 'superpowers: code-review'];
+const HISTORY_KEY = 'skill-demo-results';
+let runs = {};
+try { runs = JSON.parse(localStorage.getItem(HISTORY_KEY)) || {}; } catch { runs = {}; }
+
+function saveHistory() {
+  try { localStorage.setItem(HISTORY_KEY, JSON.stringify(runs)); } catch { /* storage blocked: keep in memory */ }
 }
 
-function render(data) {
-  state = data;
-  $('costnote').textContent = '* Cost = input + ' + data.outputWeight + ' × output. vs Normal: positive = cheaper.';
-  $('summary').innerHTML = data.skills.map((s) => {
-    const cls = s.vsNormalPercent > 0 ? 'good' : s.vsNormalPercent < 0 ? 'bad' : '';
-    const delta = s.name === 'Normal' ? 'base' : (s.vsNormalPercent > 0 ? '+' : '') + s.vsNormalPercent.toFixed(0) + '%';
-    return `<tr class="skill" data-skill="${esc(s.name)}">
-      <td><span class="name">${esc(s.name)}</span><span class="cmd">${esc(s.command)}</span></td>
-      <td>${s.turns}</td><td>${fmt(s.inputTokens)}</td><td>${fmt(s.outputTokens)}</td>
-      <td>${fmt(s.cost)}</td><td class="delta ${cls}">${delta}</td></tr>`;
+function record(skill, body, grill) {
+  const prompt = $('compare-prompt').value.trim();
+  if (grill) {
+    const b = body.baseline, s = body.session;
+    runs[skill] = {
+      prompt, normal: b.cost, skill: s.cost,
+      key: s.reachedUnderstanding
+        ? `${s.rounds} question round(s), ${s.topicsCovered.length}/${body.topicCount} decision points`
+        : `still asking after ${s.rounds} rounds`
+    };
+  } else {
+    const b = body.baseline, s = body.withSkill;
+    runs[skill] = {
+      prompt, normal: b.cost, skill: s.cost,
+      key: skill === 'caveman'
+        ? `${fmt(b.output)} → ${fmt(s.output)} output tokens`
+        : `${b.metrics.codeLines} → ${s.metrics.codeLines} lines, reuses ${b.metrics.reusedSymbols.length} → ${s.metrics.reusedSymbols.length}`
+    };
+  }
+  saveHistory();
+  renderHistory();
+}
+
+// What the cost/key-result columns actually mean for each skill, since the measure differs per skill.
+const SKILL_INFO = {
+  'grill-me': 'Skill cost sums every model call in the whole conversation (each question, the simulated answer, ' +
+    'and the final implementation), so it is naturally higher than one Normal reply — that is the cost of asking. ' +
+    '"Question rounds" is how many times it asked before implementing. "Decision points" is how many of the 5 ' +
+    'fact-sheet topics (existing code, shipped order, reason/audit, no hard delete, tests) it actually asked about ' +
+    '— a low count means it stopped asking before covering the risky parts.',
+  'caveman': 'Both costs come from one reply each (Normal vs caveman). Caveman mainly cuts output tokens by writing ' +
+    'terser prose — code is left untouched. The output-token change is the number that shows the skill working.',
+  'ponytail': 'Both costs come from one reply each. Ponytail aims to write less code without losing reuse of what ' +
+    'already exists. Compare lines of code and the reuse count: fewer lines with the same reuse count is the ' +
+    'result the skill is going for.',
+  'superpowers: brainstorm': 'Filled by the "Test superpowers\' process" card. Runs a vague task through a ' +
+    'clarify-then-design loop and checks whether it ends in a design with no code, with the question rounds and ' +
+    'decision points it raised.',
+  'superpowers: writing-plans': 'Filled by the "Test superpowers\' process" card. Gives the model an approved design ' +
+    'and checks whether each task puts a failing test before its implementation step (TDD order).',
+  'superpowers: code-review': 'Filled by the "Test superpowers\' process" card. Gives the model the requirement and ' +
+    'code with one planted defect (a shipped order can still be cancelled). "found it" = named the shipped case; ' +
+    '"partly" = saw a status check is missing but its fix still lets a shipped order through; "missed it" = neither.'
+};
+
+function showInfo(skill) {
+  const overlay = document.createElement('div');
+  overlay.className = 'popover-overlay';
+  overlay.innerHTML = `<div class="popover-box">
+    <h3>${esc(skill)}</h3>
+    <p>${esc(SKILL_INFO[skill] || '')}</p>
+    <button class="ghost">Close</button>
+  </div>`;
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
+  overlay.querySelector('button').addEventListener('click', () => overlay.remove());
+  document.body.appendChild(overlay);
+}
+
+function renderHistory() {
+  $('history').innerHTML = SKILLS.map((name) => {
+    const infoBtn = `<button class="info-btn" data-info="${esc(name)}" aria-label="What do these numbers mean?">i</button>`;
+    const h = runs[name];
+    if (!h) return `<tr><td class="name">${name}${infoBtn}</td><td></td><td></td><td></td><td></td><td></td></tr>`;
+    const pct = h.normal ? (h.normal - h.skill) / h.normal * 100 : 0;
+    const cls = pct > 0 ? 'good' : pct < 0 ? 'bad' : '';
+    const short = h.prompt.length > 40 ? h.prompt.slice(0, 40) + '…' : h.prompt;
+    return `<tr><td class="name">${name}${infoBtn}</td><td class="left" title="${esc(h.prompt)}">${esc(short)}</td>
+      <td>${fmt(h.normal)}</td><td>${fmt(h.skill)}</td>
+      <td class="delta ${cls}">${pct > 0 ? '+' : ''}${pct.toFixed(0)}%</td><td class="left">${esc(h.key)}</td></tr>`;
   }).join('');
-  renderDetails();
 }
 
-function renderDetails() {
-  if (!state) return;
-  const skill = state.skills.find((s) => s.name === openSkill);
-  if (!skill) {
-    $('details').innerHTML = '<p class="foot">Click a row to see the turns and the conversation.</p>';
-    return;
-  }
-  const rows = skill.turnUsage.map((t) => `<tr><td>${esc(t.label)}</td><td>${fmt(t.input)}</td><td>${fmt(t.output)}</td></tr>`).join('');
-  const transcript = skill.transcript.map((t) =>
-    `<div class="turn">${esc(t.label)} <span class="speaker">(${esc(t.speaker)})</span></div><pre>${esc(t.text.trim())}</pre>`).join('');
-  $('details').innerHTML = `
-    <p><span class="name">${esc(skill.name)}</span> — ${esc(skill.mechanism)}<br><span class="foot" style="margin:0">${esc(skill.takeaway)}</span></p>
-    <div style="overflow-x:auto"><table>
-      <thead><tr><th>Reply</th><th>Input</th><th>Output</th></tr></thead>
-      <tbody>${rows}</tbody>
-    </table></div>
-    <details><summary>See full conversation</summary>${transcript}</details>`;
-}
-
-async function load(live) {
-  setMode(live);
-  if (live && !confirm('Live mode makes about 17 real, billed API calls. Continue?')) {
-    setMode(false);
-    return;
-  }
-  $('estimate-error').innerHTML = '';
-  try {
-    const res = live ? await fetch('/api/live', { method: 'POST' }) : await fetch('/api/results');
-    const body = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      $('estimate-error').innerHTML = `<div class="error">${esc(body.error || res.statusText)}</div>`;
-      setMode(false);
-      return;
-    }
-    render(body);
-  } catch (err) {
-    $('estimate-error').innerHTML = `<div class="error">Network error: ${esc(err.message)}</div>`;
-  }
-}
-
-// caveman works on prose, so it gets the text example; every other skill gets the code example.
+// caveman works on prose (text example); grill-me needs open decisions to ask about (vague task);
+// the other skills get the fully specified code example.
+const EXAMPLE_KIND = { 'caveman': 'text', 'grill-me': 'vague' };
 async function loadExample() {
-  const kind = $('compare-skill').value === 'caveman' ? 'text' : 'code';
+  const kind = EXAMPLE_KIND[$('compare-skill').value] || 'code';
   const ex = await (await fetch('/api/example?kind=' + kind)).json();
   $('compare-prompt').value = ex.prompt;
   $('compare-context').value = ex.context;
@@ -196,37 +250,39 @@ async function loadExample() {
   $('compare-context').closest('details').open = !!ex.context;
 }
 
-function clarifyingResultHtml(body) {
-  const b = body.baseline, s = body.withSkill;
-  const topics = Object.keys(TOPIC_LABELS).length;
+// grill-me: the whole question-and-answer session next to Normal's single reply.
+function sessionHtml(body) {
+  const b = body.baseline, s = body.session;
   const yn = (v) => v ? 'yes' : 'no';
-  const topicList = (m) => m.topicsCovered.length
-    ? esc(m.topicsCovered.map((t) => TOPIC_LABELS[t]).join(', ')) : '—';
-  const verdict = s.metrics.hasCode
-    ? 'With grill-me, the reply already wrote code without asking first.'
-    : `With grill-me, the reply asks ${s.metrics.questions} question(s) and writes no code before understanding the problem.`;
+  const topicList = (t) => t.length ? esc(t.map((x) => TOPIC_LABELS[x] || x).join(', ')) : '—';
+  const verdict = s.reachedUnderstanding
+    ? `grill-me asked ${s.rounds} round(s) of questions, raised ${s.topicsCovered.length} of ${body.topicCount} decision points, then answered.`
+    : `grill-me was still asking after ${s.rounds} rounds, so the conversation was stopped.`;
+  const chat = s.turns.map((t) => t.role === 'assistant'
+    ? `<div class="msg"><div class="who">grill-me <span class="speaker">${fmt(t.input)} in / ${fmt(t.output)} out</span></div><pre>${esc(t.text)}</pre></div>`
+    : `<div class="msg user"><div class="who">Simulated user <span class="speaker">fact sheet</span></div><pre>${esc(t.text)}</pre></div>`).join('');
   return `
-    <p class="verdict good">${esc(verdict)}</p>
+    <p class="verdict ${s.reachedUnderstanding ? 'good' : 'bad'}">${esc(verdict)}</p>
     <div style="overflow-x:auto"><table>
-      <thead><tr><th></th><th>Normal</th><th>${esc(body.skill)}</th></tr></thead>
+      <thead><tr><th></th><th>Normal</th><th>grill-me</th></tr></thead>
       <tbody>
-        <tr><td>Questions</td><td>${b.metrics.questions}</td><td>${s.metrics.questions}</td></tr>
-        <tr><td>Writes code in the 1st reply</td><td>${yn(b.metrics.hasCode)}</td><td>${yn(s.metrics.hasCode)}</td></tr>
-        <tr><td>Decision points raised (of ${topics})</td><td>${b.metrics.topicsCovered.length}</td><td>${s.metrics.topicsCovered.length}</td></tr>
-        <tr><td>Which ones</td><td>${topicList(b.metrics)}</td><td>${topicList(s.metrics)}</td></tr>
+        <tr><td>Model calls</td><td>1</td><td>${s.calls}</td></tr>
+        <tr><td>Question rounds</td><td>${b.metrics.questions > 0 ? 1 : 0}</td><td>${s.rounds}</td></tr>
+        <tr><td>Decision points raised (of ${body.topicCount})</td><td>${b.metrics.topicsCovered.length}</td><td>${s.topicsCovered.length}</td></tr>
+        <tr><td>Which ones</td><td>${topicList(b.metrics.topicsCovered)}</td><td>${topicList(s.topicsCovered)}</td></tr>
+        <tr><td>Total cost*</td><td>${fmt(b.cost)}</td><td>${fmt(s.cost)}</td></tr>
+        <tr><td>Lines of code (final reply)</td><td>${b.metrics.codeLines}</td><td>${s.final.codeLines}</td></tr>
+        <tr><td>Reuses (names)</td><td>${b.metrics.reusedSymbols.length}</td><td>${s.final.reusedSymbols.length}</td></tr>
+        <tr><td>Has a test</td><td>${yn(b.metrics.hasTest)}</td><td>${yn(s.final.hasTest)}</td></tr>
       </tbody>
     </table></div>
-    <details>
-      <summary>See the replies</summary>
-      <div class="replies">
-        <div><div class="name" style="margin-bottom:4px">Normal</div><pre>${esc(b.text)}</pre></div>
-        <div><div class="name" style="margin-bottom:4px">${esc(body.skill)}</div><pre>${esc(s.text)}</pre></div>
-      </div>
-    </details>`;
+    <h3 class="chat-title">Conversation</h3>
+    <div class="chat">${chat}</div>
+    <details><summary>See the Normal reply</summary><pre>${esc(b.text)}</pre></details>
+    <p class="foot">* Cost = input + ${body.outputWeight} × output, summed over every call. The simulated user answers from the cancel-order fact sheet, so use Load example with grill-me.</p>`;
 }
 
 function resultHtml(body) {
-  if (body.skill === 'grill-me') return clarifyingResultHtml(body);
   const b = body.baseline, s = body.withSkill;
   const pct = body.savingPercent;
   const verdict = pct > 0 ? `With ${body.skill}, the reply is ${pct.toFixed(0)}% cheaper than Normal.`
@@ -258,26 +314,158 @@ function resultHtml(body) {
     <p class="foot">* Cost = input + ${body.outputWeight} × output.</p>`;
 }
 
+// The three superpowers process checks, each a fixed scenario run against /api/superpowers.
+function brainstormHtml(body) {
+  const topicList = (t) => t.length ? esc(t.map((x) => TOPIC_LABELS[x] || x).join(', ')) : '—';
+  const verdict = body.presentedDesignWithoutCode
+    ? `brainstorming asked ${body.rounds} round(s), raised ${body.topicsCovered.length}/${body.topicCount} decision points, then presented a design with no code.`
+    : `brainstorming asked ${body.rounds} round(s) but still wrote code in its final reply — it skipped the design step.`;
+  const chat = body.turns.map((t) => t.role === 'assistant'
+    ? `<div class="msg"><div class="who">superpowers <span class="speaker">${fmt(t.input)} in / ${fmt(t.output)} out</span></div><pre>${esc(t.text)}</pre></div>`
+    : `<div class="msg user"><div class="who">Simulated user <span class="speaker">fact sheet</span></div><pre>${esc(t.text)}</pre></div>`).join('');
+  return `
+    <p class="verdict ${body.presentedDesignWithoutCode ? 'good' : 'bad'}">${esc(verdict)}</p>
+    <div style="overflow-x:auto"><table>
+      <thead><tr><th></th><th>Normal</th><th>brainstorm</th></tr></thead>
+      <tbody>
+        <tr><td>Writes code immediately</td><td>${body.normal.hasCode ? 'yes' : 'no'}</td><td>${body.presentedDesignWithoutCode ? 'no' : 'yes'}</td></tr>
+        <tr><td>Question rounds</td><td>0</td><td>${body.rounds}</td></tr>
+        <tr><td>Decision points raised (of ${body.topicCount})</td><td>0</td><td>${body.topicsCovered.length}</td></tr>
+        <tr><td>Which ones</td><td>—</td><td>${topicList(body.topicsCovered)}</td></tr>
+        <tr><td>Total cost*</td><td>${fmt(body.normal.cost)}</td><td>${fmt(body.cost)}</td></tr>
+      </tbody>
+    </table></div>
+    <h3 class="chat-title">Conversation</h3>
+    <div class="chat">${chat}</div>
+    <details><summary>See the Normal reply</summary><pre>${esc(body.normal.text)}</pre></details>
+    <p class="foot">* Cost = input + ${body.outputWeight} × output, summed over every call. Fixed scenario: a vague "let customers cancel orders" task.</p>`;
+}
+
+function planHtml(body) {
+  const b = body.normal, s = body.skill;
+  const verdict = s.taskCount === 0 ? 'writing-plans did not produce numbered tasks.'
+    : s.testFirst === s.taskCount ? `writing-plans produced ${s.taskCount} task(s), all test-first.`
+    : `writing-plans produced ${s.taskCount} task(s), only ${s.testFirst} test-first.`;
+  const cls = s.taskCount > 0 && s.testFirst === s.taskCount ? 'good' : 'bad';
+  return `
+    <p class="verdict ${cls}">${esc(verdict)}</p>
+    <div style="overflow-x:auto"><table>
+      <thead><tr><th></th><th>Normal</th><th>writing-plans</th></tr></thead>
+      <tbody>
+        <tr><td>Cost*</td><td>${fmt(b.cost)}</td><td>${fmt(s.cost)}</td></tr>
+        <tr><td>Tasks found</td><td>${b.taskCount}</td><td>${s.taskCount}</td></tr>
+        <tr><td>Test-before-implementation</td><td>${b.testFirst}/${b.taskCount}</td><td>${s.testFirst}/${s.taskCount}</td></tr>
+      </tbody>
+    </table></div>
+    <details open>
+      <summary>See the replies</summary>
+      <div class="replies">
+        <div><div class="name" style="margin-bottom:4px">Normal</div><pre>${esc(b.text)}</pre></div>
+        <div><div class="name" style="margin-bottom:4px">writing-plans</div><pre>${esc(s.text)}</pre></div>
+      </div>
+    </details>
+    <p class="foot">* Cost = input + ${body.outputWeight} × output. Fixed scenario: an approved design for the cancel-order endpoint.</p>`;
+}
+
+// found = named the shipped-order case; partial = saw a status check is missing, but its fix still lets a
+// shipped order be cancelled; missed = neither.
+const GRADE_LABEL = { found: 'found it', partial: 'partly (missing status check, not the shipped case)', missed: 'missed it' };
+const GRADE_VERDICT = {
+  found: 'code-review caught the planted defect: a shipped order can still be cancelled.',
+  partial: 'code-review saw that a status check is missing, but not the shipped-order case, so its fix is incomplete.',
+  missed: 'code-review missed the planted defect.'
+};
+
+function reviewHtml(body) {
+  const b = body.normal, s = body.skill;
+  const cls = s.grade === 'found' ? 'good' : 'bad';
+  return `
+    <p class="verdict ${cls}">${esc(GRADE_VERDICT[s.grade])}</p>
+    <div style="overflow-x:auto"><table>
+      <thead><tr><th></th><th>Normal</th><th>code-review</th></tr></thead>
+      <tbody>
+        <tr><td>Cost*</td><td>${fmt(b.cost)}</td><td>${fmt(s.cost)}</td></tr>
+        <tr><td>Planted defect</td><td>${esc(GRADE_LABEL[b.grade])}</td><td>${esc(GRADE_LABEL[s.grade])}</td></tr>
+      </tbody>
+    </table></div>
+    <details open>
+      <summary>See the replies</summary>
+      <div class="replies">
+        <div><div class="name" style="margin-bottom:4px">Normal</div><pre>${esc(b.text)}</pre></div>
+        <div><div class="name" style="margin-bottom:4px">code-review</div><pre>${esc(s.text)}</pre></div>
+      </div>
+    </details>
+    <p class="foot">* Cost = input + ${body.outputWeight} × output. Fixed scenario: code missing the shipped-order guard.</p>`;
+}
+
+// Each superpowers step has its own row, so their results never overwrite each other.
+function recordSuperpowers(mode, body) {
+  const entry = mode === 'brainstorm'
+    ? { prompt: 'Vague task: let customers cancel orders', normal: body.normal.cost, skill: body.cost,
+        key: body.presentedDesignWithoutCode
+          ? `${body.rounds} question round(s), ${body.topicsCovered.length}/${body.topicCount} points, design with no code`
+          : `${body.rounds} question round(s), wrote code without a design` }
+    : mode === 'plan'
+    ? { prompt: 'Approved design: cancel-order endpoint', normal: body.normal.cost, skill: body.skill.cost,
+        key: `${body.skill.taskCount} task(s), ${body.skill.testFirst} test-first` }
+    : { prompt: 'Code with a planted shipped-order bug', normal: body.normal.cost, skill: body.skill.cost,
+        key: `planted defect: ${GRADE_LABEL[body.skill.grade]} (Normal: ${GRADE_LABEL[body.normal.grade]})` };
+  const row = { brainstorm: 'superpowers: brainstorm', plan: 'superpowers: writing-plans', review: 'superpowers: code-review' }[mode];
+  runs[row] = entry;
+  saveHistory();
+  renderHistory();
+}
+
+async function runSuperpowers(mode) {
+  const buttons = ['sp-brainstorm', 'sp-plan', 'sp-review'].map($);
+  const out = $('superpowers-result');
+  buttons.forEach((b) => b.disabled = true);
+  out.innerHTML = '<p class="foot">Running the scenario (up to 7 model calls for brainstorm, 2 for the others)...</p>';
+  try {
+    const res = await fetch('/api/superpowers', {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ mode })
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      out.innerHTML = `<div class="error">${esc(body.error || res.statusText)}</div>`;
+      return;
+    }
+    out.innerHTML = mode === 'brainstorm' ? brainstormHtml(body) : mode === 'plan' ? planHtml(body) : reviewHtml(body);
+    recordSuperpowers(mode, body);
+  } catch (err) {
+    out.innerHTML = `<div class="error">Network error: ${esc(err.message)}</div>`;
+  } finally {
+    buttons.forEach((b) => b.disabled = false);
+  }
+}
+
 async function compare() {
   const btn = $('compare-send');
   const out = $('compare-result');
+  const skill = $('compare-skill').value;
+  const grill = skill === 'grill-me';
   btn.disabled = true;
-  out.innerHTML = '<p class="foot">Calling the model...</p>';
+  out.innerHTML = grill
+    ? '<p class="foot">Running the conversation (up to 7 model calls)...</p>'
+    : '<p class="foot">Calling the model...</p>';
   try {
-    const res = await fetch('/api/compare', {
+    const res = await fetch(grill ? '/api/clarify' : '/api/compare', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
-        skill: $('compare-skill').value,
+        skill,
         prompt: $('compare-prompt').value.trim(),
         context: $('compare-context').value.trim(),
         knownSymbols: exampleKnown
       })
     });
     const body = await res.json().catch(() => ({}));
-    out.innerHTML = res.ok
-      ? resultHtml(body)
-      : `<div class="error">${esc(body.error || res.statusText)}</div>`;
+    if (!res.ok) {
+      out.innerHTML = `<div class="error">${esc(body.error || res.statusText)}</div>`;
+      return;
+    }
+    out.innerHTML = grill ? sessionHtml(body) : resultHtml(body);
+    record(skill, body, grill);
   } catch (err) {
     out.innerHTML = `<div class="error">Network error: ${esc(err.message)}</div>`;
   } finally {
@@ -285,18 +473,25 @@ async function compare() {
   }
 }
 
-$('btn-estimated').addEventListener('click', () => load(false));
-$('btn-live').addEventListener('click', () => load(true));
-$('summary').addEventListener('click', (e) => {
-  const row = e.target.closest('tr.skill');
-  if (!row) return;
-  openSkill = openSkill === row.dataset.skill ? null : row.dataset.skill;
-  renderDetails();
-});
 $('compare-send').addEventListener('click', compare);
 $('compare-example').addEventListener('click', loadExample);
+$('history-clear').addEventListener('click', () => { runs = {}; saveHistory(); renderHistory(); });
+$('history').addEventListener('click', (e) => {
+  const btn = e.target.closest('.info-btn');
+  if (btn) showInfo(btn.dataset.info);
+});
+// The superpowers step buttons only apply when superpowers is the selected skill.
+function syncSuperpowersCard() {
+  $('superpowers-card').style.display = $('compare-skill').value === 'superpowers' ? '' : 'none';
+}
+$('compare-skill').addEventListener('change', syncSuperpowersCard);
+syncSuperpowersCard();
 
-load(false);
+$('sp-brainstorm').addEventListener('click', () => runSuperpowers('brainstorm'));
+$('sp-plan').addEventListener('click', () => runSuperpowers('plan'));
+$('sp-review').addEventListener('click', () => runSuperpowers('review'));
+
+renderHistory();
 </script>
 </body>
 </html>

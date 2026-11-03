@@ -45,9 +45,19 @@ public sealed class LiveRunner(HttpClient http, string model, int maxTokens = 20
     }
 
     /// <summary>One single-turn call with the given system prompt. Used by the prompt comparison.</summary>
-    public async Task<SingleReply> AskOnceAsync(string system, string prompt, CancellationToken ct = default)
+    public Task<SingleReply> AskOnceAsync(string system, string prompt, CancellationToken ct = default) =>
+        AskAsync(system, [("user", prompt)], ct);
+
+    /// <summary>One call with a whole conversation so far (roles "user" / "assistant", oldest first).</summary>
+    public async Task<SingleReply> AskAsync(
+        string system, IReadOnlyList<(string Role, string Text)> conversation, CancellationToken ct = default)
     {
-        var messages = new JsonArray { new JsonObject { ["role"] = "user", ["content"] = prompt } };
+        var messages = new JsonArray();
+        foreach (var (role, text) in conversation)
+        {
+            messages.Add(new JsonObject { ["role"] = role, ["content"] = text });
+        }
+
         var reply = await SendAsync(system, messages, ct);
         return new SingleReply(reply.Text, reply.InputTokens, reply.OutputTokens);
     }
