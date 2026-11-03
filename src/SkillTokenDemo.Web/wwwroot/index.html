@@ -1,0 +1,302 @@
+<!doctype html>
+<html lang="en-GB">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cost of a skill</title>
+<style>
+  :root {
+    --bg: #f7f7f5; --panel: #ffffff; --text: #1d1d1b; --muted: #6b6b66; --line: #e2e2dd;
+    --accent: #4f7cac; --good: #3f8f5a; --bad: #b5562a; --err-bg: #fde8e8; --err-text: #8a1c1c;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #161617; --panel: #1f1f21; --text: #ececea; --muted: #9a9a94; --line: #34343a;
+      --accent: #73a0cf; --good: #7fc28f; --bad: #e08a50; --err-bg: #3d1d1d; --err-text: #f3a8a8;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #161617; --panel: #1f1f21; --text: #ececea; --muted: #9a9a94; --line: #34343a;
+    --accent: #73a0cf; --good: #7fc28f; --bad: #e08a50; --err-bg: #3d1d1d; --err-text: #f3a8a8;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.5 system-ui, -apple-system, sans-serif; }
+  main { max-width: 760px; margin: 0 auto; padding: 32px 16px 48px; }
+  h1 { font-size: 1.4rem; margin: 0 0 4px; }
+  .sub { color: var(--muted); margin: 0 0 24px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 18px; margin-bottom: 16px; }
+  .field { width: 100%; font: inherit; padding: 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: var(--text); }
+  .mono { font-family: ui-monospace, Menlo, monospace; font-size: 0.85rem; }
+  textarea.field { resize: vertical; }
+  details > summary { cursor: pointer; color: var(--muted); font-size: 0.92rem; margin: 10px 0; }
+  .actions { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-top: 12px; }
+  .actions .field { width: auto; }
+  .btn { font: inherit; padding: 9px 18px; border-radius: 8px; border: 0; background: var(--accent); color: #fff; cursor: pointer; }
+  .btn:disabled { opacity: 0.6; cursor: wait; }
+  .ghost { font: inherit; padding: 9px 14px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel); color: var(--text); cursor: pointer; }
+  .ghost:hover { border-color: var(--accent); color: var(--accent); }
+  .verdict { font-weight: 600; margin: 16px 0 8px; }
+  .verdict.good { color: var(--good); } .verdict.bad { color: var(--bad); }
+  table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+  th, td { text-align: right; padding: 8px 10px; border-bottom: 1px solid var(--line); }
+  th:first-child, td:first-child { text-align: left; }
+  th { color: var(--muted); font-weight: 600; font-size: 0.85rem; }
+  tr.skill { cursor: pointer; }
+  tr.skill:hover td { background: rgba(127,127,127,0.08); }
+  .name { font-weight: 600; }
+  .cmd { color: var(--muted); font-size: 0.85rem; margin-left: 6px; }
+  .delta.good { color: var(--good); } .delta.bad { color: var(--bad); }
+  .replies { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 10px; }
+  pre { background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 12px; white-space: pre-wrap; word-break: break-word; font-size: 0.85rem; margin: 0; }
+  .turn { margin: 14px 0 6px; font-weight: 600; }
+  .speaker { color: var(--muted); font-size: 0.85rem; font-weight: 400; }
+  .modes { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; margin: 4px 0 12px; }
+  .modes button { background: var(--panel); color: var(--text); border: 0; padding: 7px 12px; cursor: pointer; font: inherit; font-size: 0.9rem; }
+  .modes button[aria-pressed="true"] { background: var(--accent); color: #fff; }
+  .error { background: var(--err-bg); color: var(--err-text); border-radius: 8px; padding: 10px 14px; margin-top: 12px; font-size: 0.92rem; }
+  .foot { color: var(--muted); font-size: 0.82rem; margin-top: 20px; }
+  #details { margin-top: 14px; }
+  @media (max-width: 560px) {
+    main { padding: 20px 12px 40px; }
+    .replies { grid-template-columns: 1fr; }
+    th, td { padding: 6px; font-size: 0.85rem; }
+  }
+</style>
+</head>
+<body>
+<main>
+  <h1>How much does a skill cost?</h1>
+  <p class="sub">Write a prompt and compare the reply with and without the skill. Each send makes two calls to the configured model.</p>
+
+  <section class="card">
+    <textarea id="compare-prompt" class="field" rows="3" maxlength="4000" placeholder="Type a prompt..."></textarea>
+
+    <details>
+      <summary>Existing code (optional)</summary>
+      <textarea id="compare-context" class="field mono" rows="8" maxlength="8000" placeholder="Paste the code the skill should reuse."></textarea>
+    </details>
+
+    <div class="actions">
+      <select id="compare-skill" class="field">
+        <option>grill-me</option>
+        <option>caveman</option>
+        <option>ponytail</option>
+        <option>superpowers</option>
+      </select>
+      <button id="compare-example" class="ghost">Load example</button>
+      <button id="compare-send" class="btn">Send</button>
+    </div>
+
+    <div id="compare-result"></div>
+  </section>
+
+  <details class="card">
+    <summary>Estimated comparison of the skills</summary>
+    <div class="modes" role="group" aria-label="Mode">
+      <button id="btn-estimated" aria-pressed="true">Estimated</button>
+      <button id="btn-live" aria-pressed="false">Live</button>
+    </div>
+    <div id="estimate-error"></div>
+    <div style="overflow-x:auto">
+      <table>
+        <thead>
+          <tr><th>Skill</th><th>Turns</th><th>Input</th><th>Output</th><th>Cost*</th><th>vs Normal</th></tr>
+        </thead>
+        <tbody id="summary"></tbody>
+      </table>
+    </div>
+    <p class="foot" id="costnote"></p>
+    <div id="details"></div>
+  </details>
+
+  <p class="foot">Illustrative numbers: the conversations in the estimated table are written by hand. In Live mode and in the comparison, the skill instructions are short versions, not the real SKILL.md files.</p>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const fmt = (n) => Math.round(n).toLocaleString('en-GB');
+const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+let state = null;
+let openSkill = null;
+let exampleKnown = [];
+const TOPIC_LABELS = {
+  'existing': 'existing code',
+  'shipped': 'shipped order',
+  'reason': 'reason/audit',
+  'no-hard-delete': 'no hard delete',
+  'tests': 'tests'
+};
+
+function setMode(live) {
+  $('btn-estimated').setAttribute('aria-pressed', String(!live));
+  $('btn-live').setAttribute('aria-pressed', String(live));
+}
+
+function render(data) {
+  state = data;
+  $('costnote').textContent = '* Cost = input + ' + data.outputWeight + ' × output. vs Normal: positive = cheaper.';
+  $('summary').innerHTML = data.skills.map((s) => {
+    const cls = s.vsNormalPercent > 0 ? 'good' : s.vsNormalPercent < 0 ? 'bad' : '';
+    const delta = s.name === 'Normal' ? 'base' : (s.vsNormalPercent > 0 ? '+' : '') + s.vsNormalPercent.toFixed(0) + '%';
+    return `<tr class="skill" data-skill="${esc(s.name)}">
+      <td><span class="name">${esc(s.name)}</span><span class="cmd">${esc(s.command)}</span></td>
+      <td>${s.turns}</td><td>${fmt(s.inputTokens)}</td><td>${fmt(s.outputTokens)}</td>
+      <td>${fmt(s.cost)}</td><td class="delta ${cls}">${delta}</td></tr>`;
+  }).join('');
+  renderDetails();
+}
+
+function renderDetails() {
+  if (!state) return;
+  const skill = state.skills.find((s) => s.name === openSkill);
+  if (!skill) {
+    $('details').innerHTML = '<p class="foot">Click a row to see the turns and the conversation.</p>';
+    return;
+  }
+  const rows = skill.turnUsage.map((t) => `<tr><td>${esc(t.label)}</td><td>${fmt(t.input)}</td><td>${fmt(t.output)}</td></tr>`).join('');
+  const transcript = skill.transcript.map((t) =>
+    `<div class="turn">${esc(t.label)} <span class="speaker">(${esc(t.speaker)})</span></div><pre>${esc(t.text.trim())}</pre>`).join('');
+  $('details').innerHTML = `
+    <p><span class="name">${esc(skill.name)}</span> — ${esc(skill.mechanism)}<br><span class="foot" style="margin:0">${esc(skill.takeaway)}</span></p>
+    <div style="overflow-x:auto"><table>
+      <thead><tr><th>Reply</th><th>Input</th><th>Output</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table></div>
+    <details><summary>See full conversation</summary>${transcript}</details>`;
+}
+
+async function load(live) {
+  setMode(live);
+  if (live && !confirm('Live mode makes about 17 real, billed API calls. Continue?')) {
+    setMode(false);
+    return;
+  }
+  $('estimate-error').innerHTML = '';
+  try {
+    const res = live ? await fetch('/api/live', { method: 'POST' }) : await fetch('/api/results');
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      $('estimate-error').innerHTML = `<div class="error">${esc(body.error || res.statusText)}</div>`;
+      setMode(false);
+      return;
+    }
+    render(body);
+  } catch (err) {
+    $('estimate-error').innerHTML = `<div class="error">Network error: ${esc(err.message)}</div>`;
+  }
+}
+
+// caveman works on prose, so it gets the text example; every other skill gets the code example.
+async function loadExample() {
+  const kind = $('compare-skill').value === 'caveman' ? 'text' : 'code';
+  const ex = await (await fetch('/api/example?kind=' + kind)).json();
+  $('compare-prompt').value = ex.prompt;
+  $('compare-context').value = ex.context;
+  exampleKnown = ex.knownSymbols;
+  $('compare-context').closest('details').open = !!ex.context;
+}
+
+function clarifyingResultHtml(body) {
+  const b = body.baseline, s = body.withSkill;
+  const topics = Object.keys(TOPIC_LABELS).length;
+  const yn = (v) => v ? 'yes' : 'no';
+  const topicList = (m) => m.topicsCovered.length
+    ? esc(m.topicsCovered.map((t) => TOPIC_LABELS[t]).join(', ')) : '—';
+  const verdict = s.metrics.hasCode
+    ? 'With grill-me, the reply already wrote code without asking first.'
+    : `With grill-me, the reply asks ${s.metrics.questions} question(s) and writes no code before understanding the problem.`;
+  return `
+    <p class="verdict good">${esc(verdict)}</p>
+    <div style="overflow-x:auto"><table>
+      <thead><tr><th></th><th>Normal</th><th>${esc(body.skill)}</th></tr></thead>
+      <tbody>
+        <tr><td>Questions</td><td>${b.metrics.questions}</td><td>${s.metrics.questions}</td></tr>
+        <tr><td>Writes code in the 1st reply</td><td>${yn(b.metrics.hasCode)}</td><td>${yn(s.metrics.hasCode)}</td></tr>
+        <tr><td>Decision points raised (of ${topics})</td><td>${b.metrics.topicsCovered.length}</td><td>${s.metrics.topicsCovered.length}</td></tr>
+        <tr><td>Which ones</td><td>${topicList(b.metrics)}</td><td>${topicList(s.metrics)}</td></tr>
+      </tbody>
+    </table></div>
+    <details>
+      <summary>See the replies</summary>
+      <div class="replies">
+        <div><div class="name" style="margin-bottom:4px">Normal</div><pre>${esc(b.text)}</pre></div>
+        <div><div class="name" style="margin-bottom:4px">${esc(body.skill)}</div><pre>${esc(s.text)}</pre></div>
+      </div>
+    </details>`;
+}
+
+function resultHtml(body) {
+  if (body.skill === 'grill-me') return clarifyingResultHtml(body);
+  const b = body.baseline, s = body.withSkill;
+  const pct = body.savingPercent;
+  const verdict = pct > 0 ? `With ${body.skill}, the reply is ${pct.toFixed(0)}% cheaper than Normal.`
+    : pct < 0 ? `With ${body.skill}, the reply is ${Math.abs(pct).toFixed(0)}% more expensive than Normal.`
+    : `With ${body.skill}, the cost is the same as Normal.`;
+  const cls = pct > 0 ? 'good' : pct < 0 ? 'bad' : '';
+  const list = (arr) => arr.length ? esc(arr.join(', ')) : '—';
+  const yn = (v) => v ? 'yes' : 'no';
+  return `
+    <p class="verdict ${cls}">${esc(verdict)}</p>
+    <div style="overflow-x:auto"><table>
+      <thead><tr><th></th><th>Normal</th><th>${esc(body.skill)}</th></tr></thead>
+      <tbody>
+        <tr><td>Cost*</td><td>${fmt(b.cost)}</td><td>${fmt(s.cost)}</td></tr>
+        <tr><td>Input / output</td><td>${fmt(b.input)} / ${fmt(b.output)}</td><td>${fmt(s.input)} / ${fmt(s.output)}</td></tr>
+        <tr><td>Lines of code</td><td>${b.metrics.codeLines}</td><td>${s.metrics.codeLines}</td></tr>
+        <tr><td>New types</td><td>${list(b.metrics.newTypes)}</td><td>${list(s.metrics.newTypes)}</td></tr>
+        <tr><td>Reuses (names)</td><td>${b.metrics.reusedSymbols.length}</td><td>${s.metrics.reusedSymbols.length}</td></tr>
+        <tr><td>Has a test</td><td>${yn(b.metrics.hasTest)}</td><td>${yn(s.metrics.hasTest)}</td></tr>
+      </tbody>
+    </table></div>
+    <details>
+      <summary>See the replies</summary>
+      <div class="replies">
+        <div><div class="name" style="margin-bottom:4px">Normal</div><pre>${esc(b.text)}</pre></div>
+        <div><div class="name" style="margin-bottom:4px">${esc(body.skill)}</div><pre>${esc(s.text)}</pre></div>
+      </div>
+    </details>
+    <p class="foot">* Cost = input + ${body.outputWeight} × output.</p>`;
+}
+
+async function compare() {
+  const btn = $('compare-send');
+  const out = $('compare-result');
+  btn.disabled = true;
+  out.innerHTML = '<p class="foot">Calling the model...</p>';
+  try {
+    const res = await fetch('/api/compare', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        skill: $('compare-skill').value,
+        prompt: $('compare-prompt').value.trim(),
+        context: $('compare-context').value.trim(),
+        knownSymbols: exampleKnown
+      })
+    });
+    const body = await res.json().catch(() => ({}));
+    out.innerHTML = res.ok
+      ? resultHtml(body)
+      : `<div class="error">${esc(body.error || res.statusText)}</div>`;
+  } catch (err) {
+    out.innerHTML = `<div class="error">Network error: ${esc(err.message)}</div>`;
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+$('btn-estimated').addEventListener('click', () => load(false));
+$('btn-live').addEventListener('click', () => load(true));
+$('summary').addEventListener('click', (e) => {
+  const row = e.target.closest('tr.skill');
+  if (!row) return;
+  openSkill = openSkill === row.dataset.skill ? null : row.dataset.skill;
+  renderDetails();
+});
+$('compare-send').addEventListener('click', compare);
+$('compare-example').addEventListener('click', loadExample);
+
+load(false);
+</script>
+</body>
+</html>

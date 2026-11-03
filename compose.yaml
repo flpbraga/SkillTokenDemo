@@ -1,0 +1,40 @@
+# Local LLM server for the live mode of SkillTokenDemo.Web.
+# Ollama exposes an Anthropic-compatible /v1/messages endpoint on port 11434.
+#
+# Start:   docker compose up -d        (the model-pull service downloads the model once)
+#
+# The app is configured (src/SkillTokenDemo.Web/appsettings.json) to use:
+#   ANTHROPIC_BASE_URL=http://localhost:11434
+#   ANTHROPIC_MODEL=qwen2.5-coder:1.5b
+#   ANTHROPIC_API_KEY=local              (Ollama accepts any value)
+#
+# Local models are much weaker than Claude and count tokens differently, so numbers are not comparable
+# to the Claude figures. The app only sends plain chat Messages, so any chat model works.
+# qwen2.5-coder:0.5b echoes the question back instead of answering, so it is too small for the comparison.
+
+services:
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama-models:/root/.ollama
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  model-pull:
+    image: ollama/ollama:latest
+    depends_on:
+      ollama:
+        condition: service_healthy
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+    entrypoint: ["ollama", "pull", "qwen2.5-coder:1.5b"]
+    restart: "no"
+
+volumes:
+  ollama-models:
